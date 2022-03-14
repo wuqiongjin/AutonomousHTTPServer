@@ -41,6 +41,8 @@ class TcpServer
 
     void Bind()
     {
+      int opt = 1;
+      setsockopt(_lsock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
       struct sockaddr_in local;
       local.sin_family = AF_INET;
       local.sin_port = htons(_port);

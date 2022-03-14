@@ -31,6 +31,7 @@ class HttpServer
         }
         pthread_t tid;
         pthread_create(&tid, nullptr, Entrance::HandlerRequest, reinterpret_cast<void*>(sockfd));
+        pthread_detach(tid);
       }
     }
   private:
