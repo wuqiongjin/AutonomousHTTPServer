@@ -13,6 +13,9 @@ int main()
     string query_string = getenv("QUERY_STRING");
     cerr << "GET: CGI is running!" << endl;  
     cerr << "Query_String: " << query_string << endl;
+    
+    //1: 向管道中写入
+    cout << "Your Query_String is: " << query_string << endl;
   }
   else if(method == "POST"){
     cerr << "POST: CGI is running!" << endl;  

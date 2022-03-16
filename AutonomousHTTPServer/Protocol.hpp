@@ -15,7 +15,13 @@
 #define HOME_PAGE "index.html"
 
 #define OK 200
+#define BAD_REQUEST 400
 #define NOT_FOUND 404
+#define SERVER_ERROR 500
+
+#define PAGE_404 "404.html"
+#define PAGE_400 "400.html"
+#define PAGE_500 "500.html"
 
 static std::string Code2Desc(int code)
 {
@@ -23,8 +29,12 @@ static std::string Code2Desc(int code)
   {
     case OK:
       return "OK";
+    case BAD_REQUEST:
+      return "Bad Request";
     case NOT_FOUND:
-      return "NOT FOUND";
+      return "Not Found";
+    case SERVER_ERROR:
+      return "Internal Server Error";
     default:
       break;
   }
@@ -53,7 +63,7 @@ struct HttpRequest
 {
   std::string request_line;
   std::vector<std::string> request_header;
-  std::string request_blank;
+  std::string request_blank = LINE_END;
   std::string request_body;
 
   //切割请求行, 并将内容存储起来
@@ -66,6 +76,7 @@ struct HttpRequest
   std::string _query_string;
 
   int content_length = 0;
+  std::string suffix = ".html";
 
   std::unordered_map<std::string, std::string> header_map;  //请求报头的kv键值对 
 
@@ -84,7 +95,7 @@ struct HttpResponse
   int _status_code = OK; //状态码
   //std::string _status_desc; //状态码描述
   
-  int fd;   //请求的资源文件,所使用的文件描述符
+  int fd = -1;   //请求的资源文件,所使用的文件描述符
   int size; //所打开的文件资源的大小
 };
 
@@ -123,11 +134,13 @@ class EndPoint
       auto& path = http_request._path;
       auto& query_string = http_request._query_string;
       bool with_arg = false;
+      int& code = http_response._status_code;
       
       //1. 判断请求方法
       if(http_request._method != "GET" && http_request._method != "POST"){
         //非法请求
-        LOG(ERROR, "method wrong!");
+        LOG(WARNING, "method wrong!");
+        code = BAD_REQUEST;
         goto END;
       }
       
@@ -183,44 +196,161 @@ class EndPoint
         {
           http_request.cgi = true;
         }
+
+
+        //处理响应报头的Content-Type字段
+        std::string& suffix = http_request.suffix;
+        size_t pos = path.rfind(".");
+        if(pos != std::string::npos){
+          suffix = path.substr(pos); //如.css (需要加.的)
+        }
+
       }
       else//资源不存在 
       {
         http_response._status_code = NOT_FOUND; //404 NOT FOUND
-        LOG(ERROR, "resoure not exist!");
+        LOG(WARNING, "resoure not exist!");
+        code = NOT_FOUND;
         goto END;
       }
       
 
       //走到这里的, 要么是POST方法, 要么是请求资源是正确的
       if(http_request.cgi == true){
-        ProcessCGI();
+        code = ProcessCGI();
       }
       else {
         //在ProcessNonCGI函数内, 我们来构建响应并且进行字段的填充
         //cout << "[" << http_request._path << "]" << " " << "[" << http_request._query_string << "]" << endl;
-        http_response._status_code =  ProcessNonCGI();  //进行非CGI处理: 打开资源文件
+        code =  ProcessNonCGI();  //进行非CGI处理: 打开资源文件
       }
 
 
 END:
+      BuildResponseHelper();
       return;
     }
 
+  private:
+
+    //进行响应的构建
+    void BuildResponseHelper()
+    {
+      int& code = http_response._status_code;
+      std::string& response_line  = http_response.response_line;
+      response_line = HTTP_VERSION;
+      response_line += " ";
+      response_line += std::to_string(code);
+      response_line += " ";
+      response_line += Code2Desc(code);
+      response_line += LINE_END;
+
+      //如果是HandlerError, 要拼接上wwwroot目录
+      std::string path = WEB_ROOT;
+      path += "/";;
+      switch(code){
+        case OK:
+          BuildOKResponse();
+          break;
+        case BAD_REQUEST:
+          HandlerError(path + PAGE_400);
+          break;
+        case NOT_FOUND:
+          HandlerError(path + PAGE_404); //可以定义其它类型的错误, 然后同样使用HandlerError函数进行处理
+          break;
+        case SERVER_ERROR:
+          HandlerError(path + PAGE_500);
+          break;
+        default:
+          break;
+      }
+    }
+
+    //构建OK的响应(响应报头 + 响应正文<cgi要区分处理>)
+    void BuildOKResponse()
+    {
+      auto& response_header = http_response.response_header;
+      std::string line = "Content-Type: ";
+      line += MapSuffix2Type(http_request.suffix);
+      line += LINE_END;
+      response_header.push_back(line);
+
+      line = "Content-Length: ";
+      if(http_request.cgi){
+        //CGI   --->  CGI程序通过管道向Server发送了数据，这个数据就成为了request_body
+        line += std::to_string(http_response.response_body.size());
+      }
+      else {
+        //不带参数的GET方法 (非CGI)   --->  直接返回的是静态网页资源, 因此之前存储过该资源的大小, 存入到了http_response.size当中
+        line += std::to_string(http_response.size);
+      }
+
+      line += LINE_END; //细节错误2
+      response_header.push_back(line);
+    } 
+
+    void HandlerError(std::string page)
+    {
+      http_request.cgi = false;
+      auto& response_header = http_response.response_header;
+      int fd = open(page.c_str(), O_RDONLY);
+      if(fd > 0){
+        http_response.fd = fd;
+        std::string line = "Content-Type: ";
+        line += MapSuffix2Type(http_request.suffix);
+        line += LINE_END;
+        response_header.push_back(line);
+
+        line = "Content-Length: ";
+        struct stat st;
+        stat(page.c_str(), &st);
+        http_response.size = st.st_size;
+        line += std::to_string(st.st_size);
+        line += LINE_END;
+        response_header.push_back(line);
+      }
+    }
+
+  public:
     void SendResponse()
     {
-      //cout << http_response.response_line;
+      //cout << "response_line: " << http_response.response_line;
        
       send(sockfd, http_response.response_line.c_str(), http_response.response_line.size(), 0); 
       for(auto& it : http_response.response_header)
       {
+        //cout << it.c_str() << ":"<< it.size()<< endl;
         send(sockfd, it.c_str(), it.size(), 0);
         //cout << it;
       }
       
       send(sockfd, http_response.response_blank.c_str(), http_response.response_blank.size(), 0);
-      sendfile(sockfd, http_response.fd, nullptr, http_response.size);
-      close(http_response.fd);
+
+      if(http_request.cgi){
+        //发送响应正文 
+        size_t size = http_response.response_body.size();
+        const char* start = http_response.response_body.c_str();
+        size_t offset = 0;
+        size_t ret = 0;
+        
+        //while(1){
+        //  ret = send(sockfd, start + offset, size - offset, 0);
+        //  if(ret <= 0){
+        //    break;
+        //  }
+        //  offset += size;
+        //}
+
+        //小错误: ()没匹配上去, 导致条件判断出错
+        while( offset < size && (ret = send(sockfd, start + offset, size - offset, 0)) > 0)
+        {
+          offset += ret;
+        }
+      }
+      else{
+        sendfile(sockfd, http_response.fd, nullptr, http_response.size);
+        close(http_response.fd);
+      }
     }
   private:
     //读取请求行, 并将请求行存储到http_line中 
@@ -335,39 +465,42 @@ END:
     }
 
 
+    //非CGI: 这个函数中, 我们只需要打开静态资源即可。响应行、响应报头、响应正文的处理在BuildResponseHelper与BuildOKResponse或HandlerError
     int ProcessNonCGI()
     {
-      //构建响应行
-      http_response.response_line = HTTP_VERSION;
-      http_response.response_line += " ";
-      http_response.response_line += std::to_string(http_response._status_code);
-      http_response.response_line += " ";
-      http_response.response_line += Code2Desc(http_response._status_code);
-      http_response.response_line += LINE_END;
+      ////构建响应行
+      //http_response.response_line = HTTP_VERSION;
+      //http_response.response_line += " ";
+      //http_response.response_line += std::to_string(http_response._status_code);
+      //http_response.response_line += " ";
+      //http_response.response_line += Code2Desc(http_response._status_code);
+      //http_response.response_line += LINE_END;
 
       //构建响应报头
-      size_t pos = http_request._path.rfind(".");
-      if(pos != std::string::npos)
-      {
-        std::string suffix = http_request._path.substr(pos);
-        http_response.response_header.emplace_back(std::string("Content-Length") + SEP + std::to_string(http_response.size) + LINE_END);
-        http_response.response_header.emplace_back(std::string("Content-Type") + SEP + MapSuffix2Type(suffix) + LINE_END); 
-      }
-      else 
-      {
-        
-        return NOT_FOUND;
-      }
+      //size_t pos = http_request._path.rfind(".");
+      //if(pos != std::string::npos)
+      //{
+  
+      //std::string& suffix = http_request.suffix;
+      //http_response.response_header.emplace_back(std::string("Content-Length") + SEP + std::to_string(http_response.size) + LINE_END);
+      //http_response.response_header.emplace_back(std::string("Content-Type") + SEP + MapSuffix2Type(suffix) + LINE_END); 
+  
+       //}
+      //else 
+      //{
+      //  
+      //  return NOT_FOUND;
+      //}
 
       //打开文件, 读取文件的内容, 将其作为http_response的body
       //优化: 我们在这里读取文件的本质就是将文件的内容从内核缓冲区拷贝到用户缓冲区(因为文件存在外设, 需要调用系统调用接口read来读去)
       //      然而我们最终还需要把http_response的响应body从用户缓冲区发送到内核缓冲区, 这个过程有些浪费
       //    因此我们可以借助一个系统调用函数sendfile, 它能够直接将内容不经由用户空间, 在内核空间进行转发, 以此提高效率!
       http_response.fd = open(http_request._path.c_str(), O_RDONLY);
-      if(http_response.fd > 0)
-      {
+      if(http_response.fd > 0){
         return OK;
       }
+
       return NOT_FOUND;
     }
 
@@ -385,12 +518,12 @@ END:
       int ChildToFather[2];
       if(pipe(FatherToChild) < 0){
         LOG(ERROR, "pipe open error");
-        code = NOT_FOUND;
+        code = SERVER_ERROR;
         return code;
       }
       if(pipe(ChildToFather) < 0){
         LOG(ERROR, "pipe open error");
-        code = NOT_FOUND;
+        code = SERVER_ERROR;
         return code;
       }
       
@@ -444,14 +577,35 @@ END:
         }
         
         //父进程阻塞式接收来自CGI程序的管道数据
+        char ch;
+        ssize_t ret = 0;
+        while((ret = read(ChildToFather[0], &ch, 1)) > 0)
+        {
+          http_response.response_body.push_back(ch);
+        }
+        //cout << "cgi 管道接受到的body:"<< http_response.response_body << endl;
+        
+        //千万别忘记关了!!! 文件描述符资源有限
+        close(FatherToChild[1]);
+        close(ChildToFather[0]);
 
         int status = 0;
         id = waitpid(id, &status, 0); 
         if(WIFEXITED(status)){
-          
+          code = OK;
+          if(WEXITSTATUS(status) == 0){
+            code = OK;
+          }
+          else {
+            code = BAD_REQUEST;
+          }
         } 
+        else {
+          code = SERVER_ERROR;
+        }
       }
-      return NOT_FOUND;
+
+      return code;
     }
 
   private:
