@@ -2,6 +2,7 @@
 #include "Common.h"
 #include "TcpServer.hpp"
 #include "Protocol.hpp"
+#include <signal.h>
 
 class HttpServer 
 {
@@ -12,6 +13,7 @@ class HttpServer
 
     void InitServer()
     {
+      signal(SIGPIPE, SIG_IGN); //忽略SIGPIPE信号, 防止出现写入数据时, 由于客户端那边关闭了读端文件描述符, 从而导致服务器线程接收到OS的SIGPIPE从而使服务器崩溃
       TcpServer::GetInstance(_port)->InitServer();
     }
 

@@ -8,7 +8,7 @@
 #include <sys/sendfile.h>
 
 #define SEP ": "
-#define HTTP_VERSION "HTTP/1.0"
+#define HTTP_VERSION "HTTP/1.0" //基于短链接
 #define LINE_END "\r\n"   //构建http响应的时候的换行符
 
 #define WEB_ROOT "wwwroot"
@@ -111,19 +111,27 @@ class EndPoint
     void RecvRequest()
     {
       //按行读取
-      RecvHttpLine();
-      RecvHttpHeader();
-      //RecvHttpBody();
+      if(RecvHttpLine() || RecvHttpHeader()){
+        return; 
+      }
+      AnalyzeRequest();
+      RecvRequestBody(); //它里面也涉及了read_stop的判断, 在RecvRequest函数的后面会继续判断是否出现读错误
+    }
+
+    bool IsReadStop()
+    {
+      return read_stop;
     }
     
+  private:
     //分析请求(请求行+请求报头)
     void AnalyzeRequest()
     {
       AnalyzeRequestLine();   //将请求行拆分到各个字段中
       AnalyzeRequestHeader(); //将报头存储到header_map中
-      RecvHttpBody();
     }
 
+  public:
     //构建响应的步骤:
     //1. 分析请求行的请求方法GET/POST, 如果是GET方法, 对URI的进行进一步的判断; POST方法...
     //2. 分析请求行的URI, 将URI进行拆分, 然后进一步判断资源是否存在, 最终把资源存储到响应报文中
@@ -354,7 +362,7 @@ END:
     }
   private:
     //读取请求行, 并将请求行存储到http_line中 
-    void RecvHttpLine()
+    bool RecvHttpLine()
     {
       std::string& line = http_request.request_line;
       if(Util::ReadLine(sockfd, line) > 0)
@@ -363,11 +371,14 @@ END:
       }
       else 
       {
-        LOG(ERROR, "ReadLine failed!");
+        LOG(ERROR, "Recv Error!");
+        read_stop = true;  
       }
+
+      return read_stop;
     }
     
-    void RecvHttpHeader()
+    bool RecvHttpHeader()
     {
       std::string line;
       while(1)
@@ -382,23 +393,27 @@ END:
         }
         else 
         {
-
+          read_stop = true;
+          LOG(ERROR, "Recv Error!");
+          break;
         }
       }
 #ifdef DEBUG
       for(auto& e : http_request.request_header)
         cout << e << endl;
 #endif
+
       http_request.request_blank = line;  //空行
+      return read_stop;
     }
     
 
     //1. 首先判断请求方法是否为POST, 这里就认定GET方法无请求正文;
     //2. 其次需要Body-Length字段
     //读取请求正文前, 需要先对请求报头的内容进行分析和拆解(存入到header_map中), 然后利用Body-Length字段确定大小
-    void RecvHttpBody()
+    bool RecvRequestBody()
     {
-      if(IsNeedHttpBody())
+      if(IsNeedRequestBody())
       {
         cout << "Recv Http Body" << endl;
         auto& header_map = http_request.header_map;
@@ -411,8 +426,9 @@ END:
           {
             ssize_t s = recv(sockfd, &ch, 1, 0);
             if(s < 0){
-              LOG(ERROR, "recv request body error");
-              exit(5);
+              LOG(ERROR, "Recv request body error");
+              read_stop = true;
+              break;
             }
             http_request.request_body += ch;
           }
@@ -425,9 +441,10 @@ END:
           //cout << "DEBUG: " << http_request.request_body << "    content_length: "<< http_request.content_length << endl;
         }
       }
+      return read_stop;
     }
 
-    bool IsNeedHttpBody()
+    bool IsNeedRequestBody()
     {
       cout << "Method!: " << http_request._method << endl;
       if(http_request._method == "POST")
@@ -612,6 +629,7 @@ END:
     int sockfd;
     HttpRequest http_request;
     HttpResponse http_response;
+    bool read_stop = false;
 };
 
 //线程的入口
@@ -628,9 +646,10 @@ class Entrance
 
       EndPoint* ep = new EndPoint(sock);
       ep->RecvRequest();
-      ep->AnalyzeRequest();
-      ep->BuildResponse();
-      ep->SendResponse();
+      if(!ep->IsReadStop()){
+        ep->BuildResponse();
+        ep->SendResponse();
+      }
 
       LOG(INFO, "[[Entrance END:]]");
 
