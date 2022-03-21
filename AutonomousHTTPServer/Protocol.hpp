@@ -633,18 +633,25 @@ END:
 };
 
 //线程的入口
-class Entrance
+class CallBack
 {
   public:
-    static void* HandlerRequest(void* arg)
+    //让CallBack类定义的对象成为仿函数
+    void operator()(int sockfd)
+    {
+      HandlerRequest(sockfd);
+    }
+
+    //static void* HandlerRequest(void* arg)
+    void HandlerRequest(int sockfd)
     {
       LOG(INFO, "[[Entrance BEGIN:]]");
 
-      int* sockfd = reinterpret_cast<int*>(arg);
-      int sock = *sockfd;
-      delete sockfd;  //可以释放了
+      //int* sockfd = reinterpret_cast<int*>(arg);
+      //int sock = *sockfd;
+      //delete sockfd;  //可以释放了
 
-      EndPoint* ep = new EndPoint(sock);
+      EndPoint* ep = new EndPoint(sockfd);
       ep->RecvRequest();
       if(!ep->IsReadStop()){
         ep->BuildResponse();
@@ -654,6 +661,6 @@ class Entrance
       LOG(INFO, "[[Entrance END:]]");
 
       delete ep;
-      return nullptr;
+      //return nullptr;
     }
 };
