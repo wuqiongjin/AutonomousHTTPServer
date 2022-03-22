@@ -13,7 +13,7 @@ $(bin):$(bin_src)
 	$(cc) -o $@ $^ $(LD_FLAGS)
 $(cgi):$(cgi_location)/test_cgi.cc 
 	$(cc) -o $@ $^ $(LD_FLAGS)
-	cp $@ -rf ./wwwroot
+	mv $@ ./wwwroot
 
 .PHONY:output 
 output:

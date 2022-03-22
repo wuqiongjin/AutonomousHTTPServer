@@ -610,7 +610,7 @@ END:
         id = waitpid(id, &status, 0); 
         if(WIFEXITED(status)){
           code = OK;
-          if(WEXITSTATUS(status) == 0){
+          if(WEXITSTATUS(status) == 0){ //看子进程的退出码，因为子进程也可能因为崩溃退出
             code = OK;
           }
           else {
